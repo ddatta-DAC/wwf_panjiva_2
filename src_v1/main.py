@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -18,9 +24,13 @@ import numpy as np
 
 # ------------------------ #
 
-from src_v1.utils_v1 import Goodall3
+from utils_v1 import Goodall3
 
 # ------------------------ #
+
+
+# In[2]:
+
 
 '''
 Node objects
@@ -62,9 +72,15 @@ class node_record(node_class):
         node_class.increment_id()
 
 
+# In[3]:
+
+
 '''
 Some simple data to play around with 
 '''
+
+
+# In[4]:
 
 
 def create_data():
@@ -103,14 +119,25 @@ def create_data():
         )
 
     df['id'] = list(df.index)
+
     # since last few
     _anomalies = list(range(195, 200))
-    return df, _anomalies
+    normal_samples = [int(_ * 150) for _ in np.random.random(5)]
+
+    return df, _anomalies, normal_samples
+
+
+# In[ ]:
+
+
+# In[5]:
 
 
 '''
 A_ft: F x T
 '''
+
+
 def get_A_ft(graph, F, T, F_id_dict):
     _F_id_dict = {
         v: k for k, v in F_id_dict.items()
@@ -133,6 +160,9 @@ def get_A_ft(graph, F, T, F_id_dict):
             a[i][j] = 1
 
     return a
+
+
+# In[6]:
 
 
 # ------------------------ #
@@ -161,14 +191,16 @@ def find_record_id_in_graph(
     return None
 
 
+# In[7]:
+
+
 def add_record_feature_edges(
         graph,
         df,
         record_dict,
         entities_dict,
         id_col='id'
-        ):
-
+):
     entity_cols = list(df.columns)
     entity_cols.remove(id_col)
 
@@ -178,18 +210,18 @@ def add_record_feature_edges(
     for col in entity_cols:
         # probability of each entity
         count = Counter(list(df[col]))
-        for e_name,val in count.items():
+        for e_name, val in count.items():
             x = find_entity_id_in_graph(
                 graph,
                 domain,
                 e_name
             )
-            entity_prob_dict[x] = (val+1)/len(df)
+            entity_prob_dict[x] = (val + 1) / len(df)
         domain += 1
 
-    for i,row in df.iterrows():
+    for i, row in df.iterrows():
         _id = row[id_col]
-        n1 = find_record_id_in_graph(graph,_id)
+        n1 = find_record_id_in_graph(graph, _id)
         domain = 0
         for _, e_name in row.to_dict().items():
             if _ == id_col: continue
@@ -206,6 +238,10 @@ def add_record_feature_edges(
             domain += 1
 
     return graph
+
+
+# In[8]:
+
 
 # ------------------------ #
 # Capture both feature interaction & feature importance(rarity)
@@ -297,11 +333,16 @@ def add_feature_edges(
             coocc_matrix[u][v] = int(row['counts'])
             coocc_matrix[v][u] = coocc_matrix[u][v]
 
+    print('un normalized co-occ', coocc_matrix)
+
     coocc_matrix = normalize(
         coocc_matrix,
         axis=1,
         norm='max'
     )
+
+    for i in range(coocc_matrix.shape[0]):
+        coocc_matrix[i][i] = 1
 
     a = np.matmul(np.transpose(idf), idf)
     b = coocc_matrix
@@ -316,9 +357,12 @@ def add_feature_edges(
         for j in range(i, c.shape[1]):
             _n1 = arrayIndex2eID[i]
             _n2 = arrayIndex2eID[j]
-            graph.add_edge(_n1, _n2, weight=c[i][j])
+            graph.add_edge(_n1, _n2, weight=b[i][j])
 
     return graph
+
+
+# In[9]:
 
 
 # ---------------------------------- #
@@ -332,21 +376,24 @@ def show_heatmap(arr):
     plt.close()
 
 
+# In[10]:
+
+
 '''
 Create graph 
 '''
 
-def preprocess_1(refresh=False):
 
+def preprocess_1(refresh=False):
     if os.path.exists('datapkl_1.pkl') and refresh == False:
         with open('datapkl_1.pkl', 'rb') as fh:
             result = pickle.load(fh)
             df = result[0]
             labelled_indices = result[1]
             g = result[2]
-            return df, labelled_indices , g
+            return df, labelled_indices, g
 
-    df, _anomalies = create_data()
+    df, _anomalies, normal_samples = create_data()
     # consistent ordering of nodes
     g = nx.OrderedGraph()
 
@@ -355,6 +402,7 @@ def preprocess_1(refresh=False):
     # --------------------- #
     record_nodes_list = list(df['id'])
     record_nodes_dict = OrderedDict()
+
     for rn in record_nodes_list:
         _node = node_record(
             record_id=rn
@@ -399,30 +447,92 @@ def preprocess_1(refresh=False):
     show_heatmap(nx.adjacency_matrix(g).todense())
     labelled_indices = []
 
+    num_nodes = g.number_of_nodes()
+
+    '''
+    Initial labels
+    Set positive to +1
+    Set negative to -1
+    Set unlabelled to 0
+    '''
+
+    initial_labels = np.zeros([num_nodes])
+
     for a in _anomalies:
         x = find_record_id_in_graph(
             g,
             a
         )
-        labelled_indices.append(x)
 
-    result = [df,labelled_indices, g]
-
+        initial_labels[x] = +1
+    for a in normal_samples:
+        x = find_record_id_in_graph(
+            g,
+            a
+        )
+        initial_labels[x] = -1
+    show_heatmap(initial_labels)
+    result = [df, initial_labels, g]
     with open('datapkl_1.pkl', 'wb') as fh:
         pickle.dump(result, fh, pickle.HIGHEST_PROTOCOL)
-    return df, labelled_indices, g
+
+    return df, initial_labels, g
+
 
 # ----------------------------------------- #
 
 
-def semi_supervised():
-    return
+def semi_supervised(g, Y):
+    # calculate laplacian
+    L = nx.linalg.normalized_laplacian_matrix(g)
+    show_heatmap(L.todense())
+    L = L.todense()
+    Y_orig = np.reshape(Y, [-1, 1])
+    Y_old = np.reshape(Y, [-1, 1])
+    print(L.shape)
+    alpha = 0.1
+    iterate = True
+    Y_new = None
+    iter = 0
+    error_epsilon = 0.00001
+    max_iter = 10000
+
+    while iterate:
+        a = (1 - alpha) * Y_orig
+        b = alpha * np.matmul(L, np.reshape(Y_old, [-1, 1]))
+        Y_new = a + b
+
+        # ensure old labels are maintained
+        for i in range(Y_orig.shape[0]):
+            if Y_orig[i][0] == 1.0 or Y_orig[i][0] == -1.0:
+                Y_new[i][0] = Y_orig[i][0]
+        diff = np.max(np.abs(Y_old - Y_new))
+
+        if iter % 100 == 0:
+            print('iter :', iter, ' |  diff :', diff)
+        iter += 1
+        Y_old = np.array(Y_new)
+
+        if diff <= error_epsilon or iter > max_iter:
+            iterate = False
+            print(' difference = ', diff)
+
+    print(' Number of iterations ', iter)
+    return Y_new
+
+# ------------------------- #
 
 def main():
+    # original lables in labelled_indices
     df, labelled_indices, g = preprocess_1(True)
+    print(g.number_of_nodes(), g.number_of_edges())
+
+    # new labels
+    Y_new = semi_supervised(g, labelled_indices)
+    return labelled_indices, Y_new
 
 
-    return
+a, b = main()
 
-main()
+
 

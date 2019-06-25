@@ -1,0 +1,15 @@
+'columns':
+  - 'PanjivaRecordID'
+  - 'ShipperCountry'
+  - 'ShipperPanjivaID'
+  - 'ShipmentDestination'
+  - 'PortOfUnladingUNLOCODE'
+  - 'TransportMethod'
+  - 'hscode_6'
+  - 'CustomsCode'
+  - 'LocationCode'
+'predefined_domain_weights' :
+  'ShipperPanjivaID' : 1
+  'hscode_6' : 1
+'id_column' : 'PanjivaRecordID'
+

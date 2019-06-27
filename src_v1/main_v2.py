@@ -20,6 +20,7 @@ from abc import abstractmethod
 import networkx as nx
 import os
 import sys
+from pprint import pprint
 import numpy as np
 
 np.set_printoptions(precision=3)
@@ -84,12 +85,11 @@ Some simple data to play around with
 
 
 def create_data():
-    labelled_normal = []
-    labelled_naomalies = []
 
     _file_loc = './../test_data_1'
     _file_name1 = 'peru_100_anomalies.txt'
     _file_name2 = 'peru_100_good.txt'
+
     with open(os.path.join(_file_loc, _file_name1), 'r') as fh:
         inp = fh.read()
         anomalies_Pids = [int(_) for _ in inp.split('\n') if _ is not None and len(_) > 0]
@@ -101,7 +101,7 @@ def create_data():
     # 195 points
 
     data_df = pd.read_csv(os.path.join(_file_loc, 'peru_export_combined_data_1.csv'))
-
+    del data_df['ShipperCountry']
     feature_columns = list(data_df.columns)
     feature_columns.remove(_utils.CONFIG['id_column'])
     feature_columns = list(sorted(feature_columns))
@@ -165,11 +165,12 @@ def find_entity_id_in_graph(
 @functools.lru_cache(maxsize=4096)
 def find_record_id_in_graph(
         graph,
-        entity_identifier
+        record_id
 ):
+    print('finding record PanjivaID', record_id, 'in graph')
     for n in list(graph.nodes):
         obj = graph.node[n]['data']
-        if obj.type == 'record' and obj.record_id == entity_identifier:
+        if obj.type == 'record' and obj.record_id == record_id:
             return obj._id
     return None
 
@@ -214,6 +215,29 @@ def add_record_feature_edges(
             )
 
     return graph
+
+
+def mark_targeted_hscodes(
+        graph,
+        label_vector,
+        domain_entity_nodeID_dict,
+        entity_node_dict
+):
+    hs_code_file = './../test_data_1/collated_hscode_filters.csv'
+
+    _df = pd.read_csv(hs_code_file)
+    targets = list(_df.loc[_df['count'] >= 1]['hscode_6'])
+    _domain = 'hscode_6'
+    _dict = domain_entity_nodeID_dict[_domain]
+
+    for t in targets:
+        if t in _dict.keys():
+            _id = _dict[t]
+            obj = entity_node_dict[_id]
+            obj.score = +1
+            label_vector[_id] = +1
+
+    return graph, label_vector
 
 
 def add_record_feature_edges_v2(
@@ -262,10 +286,19 @@ def add_record_feature_edges_v2(
         for domain, e_id in row.to_dict().items():
             if domain == id_col:
                 continue
+            if domain in _utils.CONFIG['predefined_domain_weights']:
+                m = _utils.CONFIG['predefined_domain_weights'][domain]
+            else:
+                m = 1
+
+            w =  entity_prob_dict[domain][e_id]
+            # w = m * math.exp(w)
+            w = m * w
+
             graph.add_edge(
                 r_id,
                 e_id,
-                weight=1 / entity_prob_dict[domain][e_id]
+                weight=w
             )
 
     return graph
@@ -323,7 +356,8 @@ def add_feature_edges(
         normalize(
             np.reshape(
                 idf,
-                [1, -1]),
+                [1, -1]
+            ),
             norm='max'
         ), [-1]
     )
@@ -336,17 +370,18 @@ def add_feature_edges(
         dtype=np.float16
     )
 
-    _tmp = {e[1]: e[0] for e in enumerate(feature_cols, 0)}
+    _tmp = {
+        e[1]: e[0] for e in enumerate(feature_cols, 0)
+    }
 
     for uv in itertools.combinations(feature_cols, 2):
-        print('---', uv)
         tmp_df = df[list(uv)]
-        tmp_df_1 = pd.DataFrame(tmp_df.groupby(uv).size().reset_index(
-            name='counts')
+        tmp_df_1 = pd.DataFrame(
+            tmp_df.groupby(uv).size().reset_index(name='counts')
         )
         _d1 = uv[0]
         _d2 = uv[1]
-        print(_d1, _d2)
+
         for i, row in tmp_df_1.iterrows():
             # u and v should be array indices of co-occ matrix
             val1 = row[_d1]
@@ -354,6 +389,7 @@ def add_feature_edges(
             _i1 = find_entity_id_in_graph(
                 graph, _d1, val1
             )
+
             _i2 = find_entity_id_in_graph(
                 graph, _d2, val2
             )
@@ -372,8 +408,8 @@ def add_feature_edges(
         norm='max'
     )
 
-    for i in range(coocc_matrix.shape[0]):
-        coocc_matrix[i][i] = 1
+    # for i in range(coocc_matrix.shape[0]):
+    #     coocc_matrix[i][i] = 1
 
     a = np.matmul(
         np.transpose(idf),
@@ -386,7 +422,7 @@ def add_feature_edges(
     c = a * b
 
     # add the edges with weights
-    epsilon = 0.0001
+    epsilon = 0.00001
     for i in range(c.shape[0]):
         for j in range(i, c.shape[1]):
             _n1 = arrayIndex2eID[i]
@@ -422,10 +458,11 @@ def preprocess_1(
     if os.path.exists(local_data_file_1) and refresh == False:
         with open(local_data_file_1, 'rb') as fh:
             result = pickle.load(fh)
-
             initial_labels = result[0]
             g = result[1]
-            return data_df, initial_labels, g
+            record_nodeID_dict = result[2]
+            domain_entity_nodeID_dict = result[3]
+            return data_df, initial_labels, g, record_nodeID_dict, domain_entity_nodeID_dict
 
     # consistent ordering of nodes
     graph = nx.OrderedGraph()
@@ -441,7 +478,7 @@ def preprocess_1(
     # Add nodes
     # --------------------- #
     record_nodes_list = list(data_df[id_col])
-    record_nodeID_dict = {}
+    record_nodeID_dict = OrderedDict()
 
     for rn in record_nodes_list:
         _node = node_record(
@@ -483,7 +520,10 @@ def preprocess_1(
         entity_node_dict,
         feature_columns
     )
-    print('Number of edges', graph.number_of_edges())
+    print(
+        'Number of edges after adding feature edges',
+        graph.number_of_edges()
+    )
 
     # Add in edges between features & records
     graph = add_record_feature_edges_v2(
@@ -494,8 +534,7 @@ def preprocess_1(
         domain_entity_nodeID_dict,
         record_nodeID_dict
     )
-
-    num_nodes = graph.number_of_nodes()
+    print('Number of edges after adding feature-record edges', graph.number_of_edges())
 
     '''
     Initial labels
@@ -503,30 +542,38 @@ def preprocess_1(
     Set negative to -1
     Set unlabelled to 0
     '''
-
+    num_nodes = graph.number_of_nodes()
     initial_labels = np.zeros([num_nodes])
 
     for a in anomalies_Pids:
-        x = find_record_id_in_graph(
-            graph,
-            a
-        )
-        initial_labels[x] = +1
+        x = record_nodeID_dict[a]
+        initial_labels[x] = 1
         record_nodes_dict[x].score = 1
 
     for a in normal_Pids:
-        x = find_record_id_in_graph(
-            graph,
-            a
-        )
+        x = record_nodeID_dict[a]
         initial_labels[x] = -1
         record_nodes_dict[x].score = -1
 
-    result = [initial_labels, graph]
+    # ---------- #
+    graph, initial_labels = mark_targeted_hscodes(
+        graph,
+        initial_labels,
+        domain_entity_nodeID_dict,
+        entity_node_dict
+    )
+
+    # Save this
+    result = [
+        initial_labels,
+        graph,
+        record_nodeID_dict,
+        domain_entity_nodeID_dict
+    ]
     with open(local_data_file_1, 'wb') as fh:
         pickle.dump(result, fh, pickle.HIGHEST_PROTOCOL)
 
-    return data_df, initial_labels, graph
+    return data_df, initial_labels, graph, record_nodeID_dict, domain_entity_nodeID_dict
 
 
 # ----------------------------------------- #
@@ -535,16 +582,14 @@ def preprocess_1(
 def semi_supervised(g, Y):
     # calculate laplacian
     L = nx.linalg.normalized_laplacian_matrix(g)
-    # show_heatmap(L.todense())
-    # L = L.todense()
     Y_orig = np.reshape(Y, [-1, 1])
     Y_old = np.reshape(Y, [-1, 1])
     print(L.shape)
-    alpha = 0.1
+    alpha = 0.01
     iterate = True
     Y_new = None
     iter = 0
-    error_epsilon = 0.00001
+    error_epsilon = 0.0000001
     max_iter = 10000
 
     while iterate:
@@ -557,10 +602,12 @@ def semi_supervised(g, Y):
         for i in range(Y_orig.shape[0]):
             if Y_orig[i][0] == 1.0 or Y_orig[i][0] == -1.0:
                 Y_new[i][0] = Y_orig[i][0]
+
         diff = np.max(np.abs(Y_old - Y_new))
 
         if iter % 100 == 0:
             print('iter :', iter, ' |  diff :', diff)
+
         iter += 1
         Y_old = np.array(Y_new)
 
@@ -571,21 +618,40 @@ def semi_supervised(g, Y):
     print(' Number of iterations ', iter)
     return Y_new
 
-
 # ------------------------- #
+
+'''
+update record to +1 or -1
+'''
+def process_input(
+        val,
+        graph,
+        record_id,
+        label_vector,
+        record_nodeID_dict
+):
+    n_id = record_nodeID_dict[record_id]
+    label_vector[n_id] = val
+    graph.nodes[n_id]['data'].score = val
+    return graph, label_vector
+
+
 
 def main():
     # original lables in labelled_indices
-    df, labelled_indices, g = preprocess_1(False)
-    print(g.number_of_nodes(), g.number_of_edges())
+    df, labelled_indices, g, record_nodeID_dict, domain_entity_nodeID_dict = preprocess_1(False)
+    print(
+        g.number_of_nodes(),
+        g.number_of_edges()
+    )
 
     # new labels
-    Y_new = semi_supervised(g, labelled_indices)
+    Y_new = semi_supervised(
+        g,
+        labelled_indices
+    )
     return labelled_indices, Y_new
 
-from pprint import pprint
 
-# a, b = main()
-# for i,j in zip(a,b):
-#     print(i,j)
-# # a, b = main()
+# df, labelled_indices, g, record_nodeID_dict, domain_entity_nodeID_dict = preprocess_1(True)
+

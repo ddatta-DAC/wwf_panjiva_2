@@ -9,7 +9,7 @@
   - 'CustomsCode'
   - 'LocationCode'
 'predefined_domain_weights' :
-  'ShipperPanjivaID' : 1
-  'hscode_6' : 1
+  'ShipperPanjivaID' : 2
+  'hscode_6' : 2
 'id_column' : 'PanjivaRecordID'
 
